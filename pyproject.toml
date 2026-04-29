@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "planar-robot-rl"
+version = "0.1.0"
+description = "Custom Gymnasium environment for a 3-DOF planar robot arm learning to reach a target via Reinforcement Learning"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Rifky Afriza", email = "rifky.afriza@gmail.com" }]
+keywords = ["reinforcement-learning", "gymnasium", "robotics", "planar-robot", "stable-baselines3"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "gymnasium>=1.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "pygame>=2.1.0",
+]
+
+[project.optional-dependencies]
+train = [
+    "stable-baselines3>=2.0.0",
+    "torch>=2.0.0",
+    "tensorboard>=2.13.0",
+]
+dev = [
+    "matplotlib>=3.7.0",
+    "pytest>=7.0.0",
+]
+all = [
+    "stable-baselines3>=2.0.0",
+    "torch>=2.0.0",
+    "tensorboard>=2.13.0",
+    "matplotlib>=3.7.0",
+    "pytest>=7.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["envs*"]
