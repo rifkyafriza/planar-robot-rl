@@ -1,21 +1,21 @@
 """
 PlanarRobot3DOFEnv — Custom Gymnasium Environment
 ===================================================
-Robot planar 3-DOF (tiga sendi rotasi di bidang 2D) belajar mencapai target.
+A 3-DOF planar robot (three rotational joints in a 2D plane) learning to reach a target.
 
 Observation Space (8,):
-    [θ1, θ2, θ3]        — sudut sendi (rad)
-    [dθ1, dθ2, dθ3]     — kecepatan sudut sendi (rad/s)
-    [x_target, y_target] — posisi target (m)
+    [θ1, θ2, θ3]        — joint angles (rad)
+    [dθ1, dθ2, dθ3]     — joint angular velocities (rad/s)
+    [x_target, y_target] — target position (m)
 
 Action Space (3,):
-    [u1, u2, u3] ∈ [-1, 1] — torsi/kecepatan angular tiap sendi (ternormalisasi)
+    [u1, u2, u3] ∈ [-1, 1] — normalized torque/angular velocity for each joint
 
 Reward:
-    + (prev_dist - curr_dist)   — dense: reward untuk mendekati target
-    + 10.0                      — sparse bonus: mencapai target
-    - 0.1 * joint_limit_penalty — penalti melewati batas sendi
-    - 0.001 * action_penalty    — penalti aksi besar (smooth control)
+    + (prev_dist - curr_dist)   — dense: reward for approaching target
+    + 10.0                      — sparse bonus: reaching the target
+    - 0.1 * joint_limit_penalty — penalty for exceeding joint limits
+    - 0.001 * action_penalty    — penalty for large actions (smooth control)
 """
 
 import numpy as np
@@ -82,11 +82,11 @@ class PlanarRobot3DOFEnv(gym.Env):
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         super().reset(seed=seed)
 
-        # Random initial joint angles
+        # Randomize initial joint angles
         self.angles     = self.np_random.uniform(-np.pi / 2, np.pi / 2, size=3).astype(np.float32)
         self.velocities = np.zeros(3, dtype=np.float32)
 
-        # Random target inside reachable workspace
+        # Randomize target position within the reachable workspace
         r     = self.np_random.uniform(0.1 * self.max_reach, 0.9 * self.max_reach)
         theta = self.np_random.uniform(-np.pi, np.pi)
         self.target_pos = np.array([r * np.cos(theta), r * np.sin(theta)], dtype=np.float32)
@@ -117,15 +117,15 @@ class PlanarRobot3DOFEnv(gym.Env):
             self.joint_limit,
         ).astype(np.float32)
 
-        # Compute end-effector
+        # Compute end-effector position
         ee_pos   = self.forward_kinematics(self.angles)
         curr_dist = float(np.linalg.norm(ee_pos - self.target_pos))
 
-        # Reward
+        # Compute reward
         reward, reached = self._compute_reward(curr_dist, action)
         self._prev_dist  = curr_dist
 
-        # Termination
+        # Termination conditions
         terminated = bool(reached)
         self._step_count += 1
         truncated  = self._step_count >= self.max_episode_steps
@@ -146,7 +146,7 @@ class PlanarRobot3DOFEnv(gym.Env):
         try:
             import pygame
         except ImportError:
-            raise ImportError("pygame dibutuhkan untuk rendering. Install: pip install pygame")
+            raise ImportError("pygame is required for rendering. Install with: pip install pygame")
 
         if self.screen is None:
             pygame.init()
@@ -160,16 +160,16 @@ class PlanarRobot3DOFEnv(gym.Env):
         # ── Draw ──────────────────────────────────────────────────────────
         self.screen.fill((30, 30, 30))  # dark background
 
-        # Grid
+        # Draw grid
         self._draw_grid()
 
-        # Target
+        # Draw target
         target_screen = self._to_screen(self.target_pos)
         pygame.draw.circle(self.screen, (255, 80, 80), target_screen, 12)
         pygame.draw.circle(self.screen, (255, 150, 150), target_screen,
                            int(self.goal_threshold * self.scale), 2)
 
-        # Robot links
+        # Draw robot links
         joint_positions = self._get_joint_positions()
         colors = [(100, 180, 255), (100, 230, 180), (255, 200, 100)]
         for i in range(3):
@@ -178,11 +178,11 @@ class PlanarRobot3DOFEnv(gym.Env):
             pygame.draw.line(self.screen, colors[i], p1, p2, 6 - i)
             pygame.draw.circle(self.screen, (220, 220, 220), p1, 8)
 
-        # End-effector
+        # Draw end-effector
         ee_screen = self._to_screen(joint_positions[-1])
         pygame.draw.circle(self.screen, (255, 255, 80), ee_screen, 10)
 
-        # HUD
+        # Draw HUD
         font = pygame.font.SysFont("monospace", 16)
         ee_pos   = joint_positions[-1]
         dist     = np.linalg.norm(ee_pos - self.target_pos)
@@ -247,11 +247,11 @@ class PlanarRobot3DOFEnv(gym.Env):
         reward = float(self._prev_dist - curr_dist)          # dense shaping
         reached = curr_dist < self.goal_threshold
         if reached:
-            reward += 10.0                                   # sparse bonus
-        # joint limit penalty
+            reward += 10.0                                   # sparse bonus for reaching target
+        # Penalty for approaching joint limits
         violation = np.sum(np.abs(self.angles) > self.joint_limit * 0.95)
         reward -= 0.1 * violation
-        # smooth control penalty
+        # Smooth control penalty for large actions
         reward -= 0.001 * float(np.sum(action ** 2))
         return reward, reached
 
@@ -270,9 +270,9 @@ class PlanarRobot3DOFEnv(gym.Env):
         }
 
     def _to_screen(self, pos: np.ndarray) -> tuple:
-        """Convert world coords (m) → screen pixels."""
+        """Convert world coordinates (m) to screen pixels."""
         x = int(self.origin[0] + pos[0] * self.scale)
-        y = int(self.origin[1] - pos[1] * self.scale)  # flip Y
+        y = int(self.origin[1] - pos[1] * self.scale)  # flip Y axis
         return (x, y)
 
     def _draw_grid(self):
@@ -285,7 +285,7 @@ class PlanarRobot3DOFEnv(gym.Env):
             pygame.draw.line(self.screen, color, (x, 0), (x, self.screen_size))
         for y in range(0, self.screen_size, step):
             pygame.draw.line(self.screen, color, (0, y), (self.screen_size, y))
-        # Axes
+        # Draw coordinate axes
         cx, cy = self.origin
         pygame.draw.line(self.screen, (70, 70, 70), (cx, 0), (cx, self.screen_size), 2)
         pygame.draw.line(self.screen, (70, 70, 70), (0, cy), (self.screen_size, cy), 2)

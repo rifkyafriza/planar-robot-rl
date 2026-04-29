@@ -1,7 +1,7 @@
 """
-evaluate.py — Evaluasi dan visualisasi model yang sudah ditraining
-==================================================================
-Jalankan:
+evaluate.py — Evaluation and visualization script for trained models
+=====================================================================
+Usage:
     python evaluate.py --model models/planar_robot_sac --episodes 10 --render
 """
 
@@ -37,6 +37,7 @@ def evaluate(model_path: str, n_episodes: int = 10, render: bool = False):
             step += 1
             if terminated or truncated:
                 break
+        # Check if episode ended with success (end-effector within goal threshold)
         success = info.get("distance_to_target", 1.0) < env.goal_threshold
         successes += int(success)
         rewards.append(total_reward)

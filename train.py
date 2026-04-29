@@ -1,7 +1,7 @@
 """
-train.py — Contoh penggunaan PlanarRobot3DOFEnv dengan SAC / TD3 / PPO
-======================================================================
-Jalankan:
+train.py — Example training script for PlanarRobot3DOFEnv using SAC / TD3 / PPO
+================================================================================
+Usage:
     python train.py --algo sac --timesteps 500000
 """
 
@@ -15,7 +15,7 @@ def main():
     parser.add_argument("--render", action="store_true")
     args = parser.parse_args()
 
-    # Import SB3
+    # Import stable-baselines3 algorithms
     from stable_baselines3 import SAC, TD3, PPO
     from stable_baselines3.common.env_checker import check_env
 
