@@ -9,7 +9,11 @@ Observation Space (8,):
     [x_target, y_target] — target position (m)
 
 Action Space (3,):
-    [u1, u2, u3] ∈ [-1, 1] — normalized torque/angular velocity for each joint
+    [u1, u2, u3] ∈ [-1, 1] — normalized torque for each joint
+
+Physics:
+    Torque → angular acceleration (τ = I * α, I per-link)
+    Euler integration with damping
 
 Reward:
     + (prev_dist - curr_dist)   — dense: reward for approaching target
@@ -31,31 +35,50 @@ class PlanarRobot3DOFEnv(gym.Env):
         self,
         render_mode: Optional[str] = None,
         link_lengths: tuple = (0.4, 0.3, 0.2),
+        link_masses: tuple = (1.0, 0.8, 0.5),
         max_episode_steps: int = 500,
         goal_threshold: float = 0.05,
         dt: float = 0.05,
-        max_angular_vel: float = 2.0,
+        max_angular_vel: float = 3.0,
         joint_limit: float = np.pi,
+        damping: float = 0.1,
+        min_target_dist: float = 0.15,
     ):
         super().__init__()
 
         # ── Robot parameters ──────────────────────────────────────────────
-        self.link_lengths   = np.array(link_lengths, dtype=np.float32)
-        self.max_reach      = float(np.sum(self.link_lengths))
-        self.dt             = dt
+        self.link_lengths    = np.array(link_lengths, dtype=np.float32)
+        self.link_masses     = np.array(link_masses, dtype=np.float32)
+        self.max_reach       = float(np.sum(self.link_lengths))
+        self.dt              = dt
         self.max_angular_vel = max_angular_vel
-        self.joint_limit    = joint_limit
-        self.goal_threshold = goal_threshold
+        self.joint_limit     = joint_limit
+        self.goal_threshold  = goal_threshold
         self.max_episode_steps = max_episode_steps
+        self.damping         = damping
+        self.min_target_dist = min_target_dist
+
+        # Moment of inertia per joint: I = sum(m_i * l_i^2) for links beyond joint
+        # Simplified: each joint controls its own link + distal links
+        self.inertia = np.array([
+            float(np.sum(self.link_masses[i:] * self.link_lengths[i:] ** 2))
+            for i in range(3)
+        ], dtype=np.float32)
+
+        # Max torque scale (so action [-1,1] maps to physically meaningful torque)
+        self.max_torque = self.inertia * max_angular_vel * 4.0
 
         # ── Spaces ────────────────────────────────────────────────────────
+        # Use slightly expanded bounds to avoid check_env warnings during transients
+        vel_bound = max_angular_vel * 1.2
         obs_low = np.array(
-            [-joint_limit, -joint_limit, -joint_limit,
-             -max_angular_vel, -max_angular_vel, -max_angular_vel,
-             -self.max_reach, -self.max_reach],
+            [-joint_limit] * 3 + [-vel_bound] * 3 + [-self.max_reach] * 2,
             dtype=np.float32,
         )
-        obs_high = -obs_low
+        obs_high = np.array(
+            [joint_limit] * 3 + [vel_bound] * 3 + [self.max_reach] * 2,
+            dtype=np.float32,
+        )
 
         self.observation_space = spaces.Box(obs_low, obs_high, dtype=np.float32)
         self.action_space      = spaces.Box(low=-1.0, high=1.0, shape=(3,), dtype=np.float32)
@@ -86,10 +109,15 @@ class PlanarRobot3DOFEnv(gym.Env):
         self.angles     = self.np_random.uniform(-np.pi / 2, np.pi / 2, size=3).astype(np.float32)
         self.velocities = np.zeros(3, dtype=np.float32)
 
-        # Randomize target position within the reachable workspace
-        r     = self.np_random.uniform(0.1 * self.max_reach, 0.9 * self.max_reach)
-        theta = self.np_random.uniform(-np.pi, np.pi)
-        self.target_pos = np.array([r * np.cos(theta), r * np.sin(theta)], dtype=np.float32)
+        # Generate reachable target — retry until distance from origin is meaningful
+        for _ in range(50):
+            target_angles = self.np_random.uniform(-self.joint_limit, self.joint_limit, size=3).astype(np.float32)
+            candidate = self.forward_kinematics(target_angles)
+            if np.linalg.norm(candidate) >= self.min_target_dist:
+                self.target_pos = candidate
+                break
+        else:
+            self.target_pos = candidate  # fallback
 
         self._step_count = 0
         ee_pos = self.forward_kinematics(self.angles)
@@ -100,13 +128,17 @@ class PlanarRobot3DOFEnv(gym.Env):
         return obs, info
 
     def step(self, action: np.ndarray):
-        # Clip & scale action → angular velocity
         action = np.clip(action, -1.0, 1.0).astype(np.float32)
-        delta_vel = action * self.max_angular_vel * self.dt
 
-        # Update velocities & angles (simple Euler integration)
+        # Torque = action * max_torque
+        torque = action * self.max_torque
+
+        # Angular acceleration: α = (τ - damping * ω) / I
+        angular_acc = (torque - self.damping * self.velocities) / self.inertia
+
+        # Euler integration: ω' = ω + α*dt, θ' = θ + ω'*dt
         self.velocities = np.clip(
-            self.velocities + delta_vel,
+            self.velocities + angular_acc * self.dt,
             -self.max_angular_vel,
             self.max_angular_vel,
         ).astype(np.float32)
@@ -118,14 +150,14 @@ class PlanarRobot3DOFEnv(gym.Env):
         ).astype(np.float32)
 
         # Compute end-effector position
-        ee_pos   = self.forward_kinematics(self.angles)
+        ee_pos    = self.forward_kinematics(self.angles)
         curr_dist = float(np.linalg.norm(ee_pos - self.target_pos))
 
         # Compute reward
         reward, reached = self._compute_reward(curr_dist, action)
         self._prev_dist  = curr_dist
 
-        # Termination conditions
+        # Termination
         terminated = bool(reached)
         self._step_count += 1
         truncated  = self._step_count >= self.max_episode_steps
@@ -137,11 +169,11 @@ class PlanarRobot3DOFEnv(gym.Env):
         if self.render_mode == "human":
             self.render()
 
-        return obs, reward, terminated, truncated, info
+        return obs, float(reward), terminated, truncated, info
 
     def render(self):
         if self.render_mode is None:
-            return
+            return None
 
         try:
             import pygame
@@ -158,9 +190,7 @@ class PlanarRobot3DOFEnv(gym.Env):
             self.clock = pygame.time.Clock()
 
         # ── Draw ──────────────────────────────────────────────────────────
-        self.screen.fill((30, 30, 30))  # dark background
-
-        # Draw grid
+        self.screen.fill((30, 30, 30))
         self._draw_grid()
 
         # Draw target
@@ -184,8 +214,8 @@ class PlanarRobot3DOFEnv(gym.Env):
 
         # Draw HUD
         font = pygame.font.SysFont("monospace", 16)
-        ee_pos   = joint_positions[-1]
-        dist     = np.linalg.norm(ee_pos - self.target_pos)
+        ee_pos = joint_positions[-1]
+        dist   = np.linalg.norm(ee_pos - self.target_pos)
         hud_lines = [
             f"Step : {self._step_count}/{self.max_episode_steps}",
             f"Dist : {dist:.3f} m",
@@ -199,6 +229,7 @@ class PlanarRobot3DOFEnv(gym.Env):
         if self.render_mode == "human":
             pygame.display.flip()
             self.clock.tick(self.metadata["render_fps"])
+            return None
 
         if self.render_mode == "rgb_array":
             return np.transpose(
@@ -247,11 +278,11 @@ class PlanarRobot3DOFEnv(gym.Env):
         reward = float(self._prev_dist - curr_dist)          # dense shaping
         reached = curr_dist < self.goal_threshold
         if reached:
-            reward += 10.0                                   # sparse bonus for reaching target
-        # Penalty for approaching joint limits
+            reward += 10.0                                   # sparse bonus
+        # Penalty for approaching joint limits (within 5% of limit)
         violation = np.sum(np.abs(self.angles) > self.joint_limit * 0.95)
-        reward -= 0.1 * violation
-        # Smooth control penalty for large actions
+        reward -= 0.1 * float(violation)
+        # Smooth control penalty
         reward -= 0.001 * float(np.sum(action ** 2))
         return reward, reached
 
@@ -285,7 +316,6 @@ class PlanarRobot3DOFEnv(gym.Env):
             pygame.draw.line(self.screen, color, (x, 0), (x, self.screen_size))
         for y in range(0, self.screen_size, step):
             pygame.draw.line(self.screen, color, (0, y), (self.screen_size, y))
-        # Draw coordinate axes
         cx, cy = self.origin
         pygame.draw.line(self.screen, (70, 70, 70), (cx, 0), (cx, self.screen_size), 2)
         pygame.draw.line(self.screen, (70, 70, 70), (0, cy), (self.screen_size, cy), 2)
